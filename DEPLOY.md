@@ -51,6 +51,33 @@ Once a live Slack turn + a daily brief run on CF, **retire the OpenClaw box for 
 3. Ensure the bundler preserves class names (no minify) so Workflow routing by `class_name` survives — wrangler does not minify by default, so this holds.
 4. To fall back to GA-only missions (deploy without the entitlement), set `DYNAMIC_MISSIONS="false"` and remove the `worker_loaders` + `DYNAMIC_WORKFLOWS` bindings.
 
+## 7. Private connectivity to tailnet boxes (Cloudflare Mesh + Workers VPC)
+
+Workers/DOs can't be Tailscale nodes. To let the operator reach a private box (e.g. scanbox-as-MCP), use **Cloudflare Mesh** (a Tailscale alternative) + a **Workers VPC** network binding. Verified runbook (2026-06-28):
+
+1. **Enable Mesh + create a node (dashboard wizard — account-wide).** Dashboard → **Networking → Mesh → Add a node** → name it → **Create node** → copy the `<TOKEN>`. ⚠️ The wizard also flips **account-wide Zero-Trust settings** (device enrollment policy, a device profile with Split-Tunnel **Include** `0.0.0.0/12`, Gateway proxy for TCP/UDP/ICMP). Run it deliberately.
+2. **Enroll the node on a Linux box** (Debian/Ubuntu):
+   ```
+   curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
+   echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(. /etc/os-release && echo $VERSION_CODENAME) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list && \
+   sudo apt-get update -qq && sudo apt-get install -y -qq cloudflare-warp && \
+   sudo warp-cli connector new <TOKEN> && sudo warp-cli connect
+   ```
+   The box appears **Online** with a **Mesh IP** (`0.0.0.0/12`).
+   ⚠️ **Do NOT run this on `scanbox` as-is** — scanbox already runs **Tailscale** (CGNAT `0.0.0.0/10`), which overlaps Mesh's `0.0.0.0/12`. Either (a) put the Mesh node on a **fresh box**, or (b) **migrate scanbox off Tailscale onto Mesh** (remove Tailscale first), or (c) use a custom Mesh subnet. Don't stack both on the live appliance blind.
+3. **Bind the Mesh network to the operator** (`wrangler.toml`):
+   ```
+   [[vpc_networks]]
+   binding = "MESH"
+   network_id = "cf1:network"   # the account's Mesh network
+   remote = true
+   ```
+   Then `wrangler deploy`. (Add the binding only AFTER step 1 — `cf1:network` requires Mesh enabled, else deploy errors.)
+4. **Reach the box from the operator:** `await env.MESH.fetch("http://<box-mesh-ip>/...")`, or point `MCP_SCANBOX_URL` at the Mesh IP and the existing `addMcpServer("scanbox", …)` wiring uses it.
+5. **Payload prerequisite:** scanbox is currently a FastAPI scanner, not an MCP server — **scanbox-as-MCP must be built** before the operator has anything to call there. Mesh gives the path; the MCP is the cargo.
+
+Docs: `developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/get-started` · `/workers-vpc/examples/connect-to-cloudflare-mesh`.
+
 ## Non-negotiables
 No raw secret in repo/Slack/logs. The operator proposes; deploy/money/reveal/external-post
 are founder-gated behind the Workflow approval. The treasury signing key never enters this runtime.
