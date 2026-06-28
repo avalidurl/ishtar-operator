@@ -58,13 +58,6 @@ app.get("/health", (c) => c.json({ ok: true, service: "ishtar-operator" }));
 
 app.post("/slack", async (c) => {
   const raw = await c.req.text();
-  const ok = await verifySlackSignature(
-    c.env.SLACK_SIGNING_SECRET,
-    c.req.header("x-slack-request-timestamp"),
-    raw,
-    c.req.header("x-slack-signature"),
-  );
-  if (!ok) return c.json({ error: "bad_signature" }, 401);
 
   let body: SlackEnvelope;
   try {
@@ -73,10 +66,23 @@ app.post("/slack", async (c) => {
     return c.json({ error: "bad_request" }, 400);
   }
 
-  // Slack setup handshake (still signature-verified above).
+  // Slack URL-verification handshake — echo the challenge BEFORE the signature
+  // check. The challenge is a random token Slack sends at setup; reflecting it
+  // leaks nothing and changes no state, and answering it first lets the endpoint
+  // verify even while the signing secret is still being sorted. REAL events are
+  // signature-checked below (the handshake is the only pre-signature path).
   if (body.type === "url_verification" && typeof body.challenge === "string") {
     return c.json({ challenge: body.challenge });
   }
+
+  // All real events MUST pass signature verification.
+  const ok = await verifySlackSignature(
+    c.env.SLACK_SIGNING_SECRET,
+    c.req.header("x-slack-request-timestamp"),
+    raw,
+    c.req.header("x-slack-signature"),
+  );
+  if (!ok) return c.json({ error: "bad_signature" }, 401);
 
   if (body.type === "event_callback" && body.event) {
     const ev = body.event;

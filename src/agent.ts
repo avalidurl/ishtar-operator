@@ -26,11 +26,36 @@ import { triggerDynamicMission } from "./mission-dynamic";
 
 const utcDay = (): string => new Date().toISOString().slice(0, 10);
 
+// Per-M-token USD prices, read from the live Workers-AI catalog (models/search
+// → properties.price) — not guessed. Keep both router tiers here so onStepFinish
+// charges the budget at the model that actually ran.
 const PRICING: Record<string, { in: number; out: number }> = {
+  "@cf/zai-org/glm-5.2": { in: 1.4, out: 4.4 },
+  "@cf/zai-org/glm-4.7-flash": { in: 0.0605, out: 0.4 },
   "@cf/openai/gpt-oss-120b": { in: 0.35, out: 0.75 },
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { in: 0.293, out: 2.253 },
 };
 const DEFAULT_PRICE = { in: 0.3, out: 2.5 };
+
+// ---- Complexity router (light tier) --------------------------------------
+// AI Gateway Dynamic Routing is rule-based (plan/rate-limit/budget/AB) and CANNOT
+// read the prompt; the only prompt-aware "auto" router is OpenRouter Auto, which is
+// non-deterministic and unsafe mid-tool-loop. So the router lives HERE, in-agent:
+// a conservative, brain-by-default gate that diverts only OBVIOUSLY trivial turns to
+// the cheap LIGHT model. Bias is correctness — when in doubt, the brain answers.
+const LIGHT_INTENTS = new Set([
+  "hi", "hii", "hey", "heya", "hello", "hellow", "yo", "sup", "wassup", "gm", "gn",
+  "good morning", "good evening", "good night", "morning", "evening",
+  "you there", "u there", "are you there", "you up", "u up", "are you up",
+  "you online", "are you online", "you alive", "are you alive", "you awake",
+  "are you awake", "you working", "are you working", "ping", "test", "testing",
+  "thanks", "thank you", "thx", "ty", "tysm", "cheers", "ok", "okay", "k", "kk",
+  "got it", "gotcha", "cool", "nice", "great", "perfect", "awesome", "lol",
+  "yes", "yep", "yeah", "ya", "no", "nope", "nah", "yup", "👍", "🙏", "👌",
+]);
+// Any of these in a turn forces the BRAIN regardless of length — they imply tools,
+// state reads, reasoning, or founder commands.
+const BRAIN_KEYWORDS = /\b(status|brief|plan|mission|build|deploy|approve|reject|hold|fix|write|create|review|scan|repo|why|how|what|when|who|which|analy|summ|draft|propose|check|run|update|migrat|cost|budget|spend)\b/i;
 
 /** One mission spec the orchestrator hands to a Workflow. */
 export interface MissionParams {
@@ -41,13 +66,50 @@ export interface MissionParams {
 }
 
 export class OperatorAgent extends Think<Env> {
-  /** The model — Workers AI routed through the `datebook` AI Gateway (cap + logs). */
+  /** Model id the router picked for the CURRENT turn. getModel reads it; routeTurn
+   *  sets it at turn start, then it sticks for the whole turn (never swap mid-loop —
+   *  that breaks tool-call formatting). Defaults to the brain when unset. */
+  private routedModel?: string;
+
+  /** The id of the model that should run right now (routed light tier or brain). */
+  private activeModel(): string {
+    return this.routedModel ?? this.env.CHAT_MODEL;
+  }
+
+  /**
+   * Complexity router: pick the LIGHT model for a turn ONLY when the message is
+   * obviously trivial (a known greeting/ack/presence-check, ≤6 words, no brain
+   * keyword). Everything else — every question, command, or longer turn — gets the
+   * brain. Conservative on purpose: a misroute-to-light costs quality, a
+   * misroute-to-brain only costs a few cents. Routes ONCE per turn.
+   */
+  private routeTurn(text: string): void {
+    const light = this.env.LIGHT_MODEL;
+    if (!light) {
+      this.routedModel = undefined;
+      return;
+    }
+    const norm = text.trim().toLowerCase().replace(/[.!?,]+$/g, "").replace(/\s+/g, " ");
+    const trivial = LIGHT_INTENTS.has(norm) || (norm.split(" ").length <= 6 && LIGHT_INTENTS.has(norm.replace(/[^a-z ]/g, "").trim()));
+    const wantsBrain = BRAIN_KEYWORDS.test(text);
+    this.routedModel = trivial && !wantsBrain ? light : undefined;
+  }
+
+  /** The model — Workers AI routed through the `datebook` AI Gateway (cap + logs).
+   *  Model id = the router's pick for this turn (light tier or brain). */
   getModel() {
     const workersai = createWorkersAI({
       binding: this.env.AI,
       gateway: { id: this.env.AI_GATEWAY_ID },
     });
-    return workersai(this.env.CHAT_MODEL);
+    // FAST MODE. GLM-5.2 / Kimi / GPT-OSS deliberate ("thinking") by default →
+    // ~60s/reply, unusable for interactive Slack. reasoning_effort:"low" +
+    // enable_thinking:false is the Workers-AI fast/no-deliberation switch (a few
+    // seconds). Unsupported keys are ignored by models that don't have thinking.
+    return workersai(this.activeModel(), {
+      reasoning_effort: "low",
+      chat_template_kwargs: { enable_thinking: false },
+    } as Record<string, unknown>);
   }
 
   /** Always-on operator behavior (the operator-grammar + chaperone-decision playbooks). */
@@ -134,7 +196,7 @@ export class OperatorAgent extends Think<Env> {
   /** Record spend per step from reported usage. */
   async onStepFinish(ctx: { usage?: { inputTokens?: number; outputTokens?: number } }): Promise<void> {
     try {
-      const p = PRICING[this.env.CHAT_MODEL] ?? DEFAULT_PRICE;
+      const p = PRICING[this.activeModel()] ?? DEFAULT_PRICE;
       const tin = ctx.usage?.inputTokens ?? 0;
       const tout = ctx.usage?.outputTokens ?? 0;
       if (tin || tout) this.recordUsd((tin / 1e6) * p.in + (tout / 1e6) * p.out);
@@ -161,17 +223,33 @@ export class OperatorAgent extends Think<Env> {
       if (existing.length) return null;
       this.sql`INSERT OR IGNORE INTO seen_events (event_id) VALUES (${p.eventId})`;
     }
+    // Hand the model turn to the DO's OWN scheduler (immediate alarm). The Worker
+    // acks Slack in <3s and its waitUntil finishes fast; the turn then runs on the
+    // Durable Object's lifetime — NOT the Worker request's waitUntil, which CF
+    // cancels at ~30s and was killing the turn before it could post a reply.
+    await this.schedule(0, "runSlackTurn", { text: p.text, threadKey: p.threadKey, channel: p.channel });
+    return "queued";
+  }
+
+  /** The actual Slack turn (runs via this.schedule() → DO alarm, own lifetime). */
+  async runSlackTurn(p: { text: string; threadKey: string; channel: string }): Promise<void> {
     const { scrubSecrets, slackPostMessage } = await import("./slack");
     if (this.overBudget()) {
-      const msg = `I've hit my daily AI budget ($${this.env.DAILY_USD_BUDGET}). Bump it or wait for the UTC reset.`;
-      await slackPostMessage(this.env.SLACK_BOT_TOKEN, p.channel, msg, p.threadKey || undefined);
-      return msg;
+      await slackPostMessage(
+        this.env.SLACK_BOT_TOKEN,
+        p.channel,
+        `I've hit my daily AI budget ($${this.env.DAILY_USD_BUDGET}). Bump it or wait for the UTC reset.`,
+        p.threadKey || undefined,
+      );
+      return;
     }
+    // Complexity router: pick light vs brain for THIS turn before the loop starts.
+    this.routeTurn(p.text);
     let reply = "(no reply)";
     try {
-      // Think runs the full agentic loop (memory + tools) and persists the assistant
-      // message into the Session; saveMessages returns only status, so read the reply
-      // back from this.messages (the Session getter).
+      // Think runs the agentic loop + persists the assistant message into the
+      // Session; saveMessages returns only status, so read the reply back from
+      // this.messages (the Session getter).
       const result = await this.saveMessages([
         { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: p.text }] },
       ]);
@@ -180,14 +258,15 @@ export class OperatorAgent extends Think<Env> {
         const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
         reply = uiText(lastAssistant) || "(no reply)";
       } else {
-        reply = "(I couldn't finish that — try again.)";
+        console.error("slack turn not completed:", result.status, (result as { error?: string }).error);
+        reply = "I hit a snag finishing that — try me again.";
       }
     } catch (e) {
-      reply = String((e as Error)?.message ?? "error");
+      console.error("slack turn threw:", e);
+      reply = "Something went wrong on my side — try again.";
     }
     reply = scrubSecrets(reply) || "(no reply)";
     await slackPostMessage(this.env.SLACK_BOT_TOKEN, p.channel, reply, p.threadKey || undefined);
-    return reply;
   }
 
   /* --------------------------- daily briefer ----------------------------- */

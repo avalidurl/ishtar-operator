@@ -43,9 +43,16 @@ binding = "DYNAMIC_WORKFLOWS"
 class_name = "DynamicMissionWorkflow"
 
 [vars]
-# @cf/openai/gpt-oss-120b — OpenAI's OPEN-WEIGHT model hosted ON Workers AI (no OpenAI API,
-# no ToS surface); a frontier-scale reasoning model for the operator. Re-verify id at deploy.
-CHAT_MODEL = "@cf/openai/gpt-oss-120b"
+# Operator brain — IDs verified live in the Workers AI catalog 2026-06-28. GLM 5.2 =
+# frontier reasoning + tool-calling. Project alternatives (one-line swap + redeploy):
+#   @cf/nvidia/nemotron-3-120b-a12b  (built for multi-agent)
+#   @cf/moonshotai/kimi-k2.7-code    (agentic, tools, 256k ctx)
+CHAT_MODEL = "@cf/zai-org/glm-5.2"
+# LIGHT tier — the complexity router diverts obviously-trivial turns (greetings, acks,
+# "you up?") here for sub-second, ~20x-cheaper replies. Same ZAI family → same voice.
+# Verified live 2026-06-28 ($0.06/$0.40 per M in/out vs glm-5.2's $1.4/$4.4). Unset = no
+# routing (brain answers everything).
+LIGHT_MODEL = "@cf/zai-org/glm-4.7-flash"
 # All env.AI.run routes through this AI Gateway id (dollar spend cap set in the dashboard).
 AI_GATEWAY_ID = "datebook"
 # Hard daily AI spend ceiling in USD; the operator stops once exceeded.

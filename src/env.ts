@@ -58,8 +58,12 @@ export interface Env {
   /** Optional — the channel the daily brief is posted to ("C…"). */
   SLACK_BRIEF_CHANNEL?: string;
 
-  /** Workers-AI model id for operator reasoning. */
+  /** Workers-AI model id for operator reasoning (the BRAIN tier). */
   CHAT_MODEL: string;
+  /** Workers-AI model id for the LIGHT tier — trivial/chatty turns the complexity
+   *  router diverts here for sub-second replies (e.g. greetings, presence checks).
+   *  Same family as CHAT_MODEL so the voice stays consistent. */
+  LIGHT_MODEL?: string;
   /** AI Gateway id; all env.AI.run calls route through it (dollar cap in dashboard). */
   AI_GATEWAY_ID: string;
   /** Hard daily AI spend ceiling in USD (string float, parsed at use site). */
