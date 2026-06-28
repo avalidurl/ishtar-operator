@@ -81,6 +81,12 @@ function loadMission(env: DynEnv, missionId: string, params: MissionParams) {
     compatibilityDate: "2026-06-01",
     mainModule: "mission.js",
     modules: { "mission.js": generateMissionModule(params) },
+    // SANDBOX the loaded isolate: globalOutbound:null gives the runtime-generated
+    // module ZERO internet egress (the @cloudflare/dynamic-workflows canonical example
+    // sets this; we'd dropped it — security audit 2026-06-28, HIGH). The module talks
+    // ONLY to its WORKFLOWS binding below; if a mission ever needs egress, route it
+    // through an explicit, allow-listed fetch binding, never open outbound.
+    globalOutbound: null,
     // The generated worker uses this exactly like a real Workflow binding; every
     // create() is tagged with { missionId } so the engine routes resumes back here.
     env: { WORKFLOWS: wrapWorkflowBinding({ missionId }) },

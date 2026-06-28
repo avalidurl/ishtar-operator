@@ -30,8 +30,9 @@ const utcDay = (): string => new Date().toISOString().slice(0, 10);
 // → properties.price) — not guessed. Keep both router tiers here so onStepFinish
 // charges the budget at the model that actually ran.
 const PRICING: Record<string, { in: number; out: number }> = {
-  "@cf/zai-org/glm-5.2": { in: 1.4, out: 4.4 },
-  "@cf/zai-org/glm-4.7-flash": { in: 0.0605, out: 0.4 },
+  "@cf/moonshotai/kimi-k2.6": { in: 0.95, out: 4.0 }, // operator BRAIN (fast ~5s)
+  "@cf/zai-org/glm-4.7-flash": { in: 0.0605, out: 0.4 }, // LIGHT tier (~1-3s)
+  "@cf/zai-org/glm-5.2": { in: 1.4, out: 4.4 }, // benched: 45-55s/call, async-only
   "@cf/openai/gpt-oss-120b": { in: 0.35, out: 0.75 },
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { in: 0.293, out: 2.253 },
 };
