@@ -17,7 +17,7 @@
  * The DO class (OperatorAgent) and the Workflow class (MissionWorkflow) are
  * exported here so Wrangler can bind them.
  */
-import { getAgentByName, routeAgentRequest } from "agents";
+import { getAgentByName } from "agents";
 import { Hono } from "hono";
 import { OperatorAgent } from "./agent";
 import type { Env } from "./env";
@@ -160,11 +160,16 @@ app.post("/admin/brief", async (c) => {
   return c.json({ ok: true });
 });
 
-/* ----------------------- Agents SDK fallback -------------------------- */
+/* ----------------------- no public Agents transport ------------------- */
 
-app.all("*", async (c) => {
-  const res = await routeAgentRequest(c.req.raw, c.env);
-  return res ?? c.json({ error: "not_found" }, 404);
-});
+// SECURITY (audit 2026-06-28, HIGH): we do NOT expose routeAgentRequest. The
+// operator has no browser/WebSocket client — the founder talks ONLY via /slack.
+// Handing the catch-all to routeAgentRequest published the Durable Object's
+// UNAUTHENTICATED Agents-SDK WebSocket: an anonymous connect got a full
+// `cf_agent_state` dump + the internal `cf_agent_mcp_servers` URLs, and the
+// connection was read-WRITE by default (shouldConnectionBeReadonly() => false).
+// The Hetzner box was Tailscale-only and structurally never had this. Unknown
+// paths now 404. (getAgentByName still works — it's the binding, not this route.)
+app.all("*", (c) => c.json({ error: "not_found" }, 404));
 
 export default app;
