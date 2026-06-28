@@ -1,0 +1,67 @@
+name = "ishtar-operator"
+main = "src/index.ts"
+# Matches the proven ishtar-intern runtime pin (wrangler 4.100.0).
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Workers Logs — invocation/exception telemetry (founder reviews in dashboard).
+[observability]
+enabled = true
+  [observability.logs]
+  invocation_logs = true
+
+# Workers AI — the ONLY inference surface, routed through the AI Gateway (AI_GATEWAY_ID).
+[ai]
+binding = "AI"
+
+# The operator brain itself — an Agent IS a Durable Object (Agents SDK).
+[[durable_objects.bindings]]
+name = "OperatorAgent"
+class_name = "OperatorAgent"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["OperatorAgent"]
+
+# GA Cloudflare Workflows — the approval-gated build-mission engine (missions.ts).
+[[workflows]]
+name = "mission-workflow"
+binding = "MISSION_WORKFLOW"
+class_name = "MissionWorkflow"
+
+# Dynamic Workflows — LIVE (the runtime-generated-mission engine). The operator routes
+# missions here when DYNAMIC_MISSIONS="true". Runs on Worker Loaders (Dynamic Workers),
+# which is OPEN BETA on the Workers Paid plan — `wrangler deploy` needs the account
+# entitlement (request it from Cloudflare; see DEPLOY.md). dry-run does not need it.
+[[worker_loaders]]
+binding = "LOADER"
+
+[[workflows]]
+name = "dynamic-mission-workflow"
+binding = "DYNAMIC_WORKFLOWS"
+class_name = "DynamicMissionWorkflow"
+
+[vars]
+# @cf/openai/gpt-oss-120b — OpenAI's OPEN-WEIGHT model hosted ON Workers AI (no OpenAI API,
+# no ToS surface); a frontier-scale reasoning model for the operator. Re-verify id at deploy.
+CHAT_MODEL = "@cf/openai/gpt-oss-120b"
+# All env.AI.run routes through this AI Gateway id (dollar spend cap set in the dashboard).
+AI_GATEWAY_ID = "datebook"
+# Hard daily AI spend ceiling in USD; the operator stops once exceeded.
+DAILY_USD_BUDGET = "3"
+# Lock Slack to one workspace/founder (set after install). Empty = any in the installed workspace.
+SLACK_TEAM_ID = ""
+SLACK_FOUNDER_USER_ID = ""
+# Channel the daily brief posts to ("C…"); empty = brief is skipped.
+SLACK_BRIEF_CHANNEL = ""
+# Dynamic Workflows ON — the operator routes build missions through the runtime-generated
+# Workflow engine (mission-dynamic.ts). Requires the Worker Loader beta entitlement to deploy.
+DYNAMIC_MISSIONS = "true"
+
+# Secrets (wrangler secret put — never [vars], never logged):
+#   ACCESS_KEY            # founder bearer for /admin/*
+#   SLACK_SIGNING_SECRET  # verifies POST /slack
+#   SLACK_BOT_TOKEN       # xoxb-… for chat.postMessage
+#   MCP_TOKEN             # bearer for authed MCP servers (optional)
+# Optional MCP endpoints (vars or secrets): MCP_LINEAR_URL, MCP_NOTION_URL, MCP_QMD_URL, MCP_SCANBOX_URL
