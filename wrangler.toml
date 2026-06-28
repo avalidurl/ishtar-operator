@@ -56,8 +56,9 @@ CHAT_MODEL = "@cf/moonshotai/kimi-k2.6"
 LIGHT_MODEL = "@cf/zai-org/glm-4.7-flash"
 # All env.AI.run routes through this AI Gateway id (dollar spend cap set in the dashboard).
 AI_GATEWAY_ID = "datebook"
-# Hard daily AI spend ceiling in USD; the operator stops once exceeded.
-DAILY_USD_BUDGET = "3"
+# Hard daily AI spend ceiling in USD; the operator fail-closes once exceeded
+# (runaway-loop money backstop, NOT a usage target). Founder-set 2026-06-28.
+DAILY_USD_BUDGET = "20"
 # Lock Slack to one workspace/founder (set after install). Empty = any in the installed workspace.
 SLACK_TEAM_ID = ""
 SLACK_FOUNDER_USER_ID = ""
