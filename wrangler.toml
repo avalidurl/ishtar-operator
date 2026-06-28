@@ -43,17 +43,15 @@ binding = "DYNAMIC_WORKFLOWS"
 class_name = "DynamicMissionWorkflow"
 
 [vars]
-# Operator brain — kimi-k2.6: agentic + tool-calling + FAST (~5s/call, verified live
-# 2026-06-28). glm-5.2 was benched here: it runs 45-55s/call regardless of
-# reasoning_effort/enable_thinking (heavy reasoning model) → the DO alarm running the
-# Slack turn got CANCELED at 42s and replies hung forever. Interactive needs fast.
-# glm-5.2/nemotron-3-120b stay viable ONLY for async build missions (no latency gate).
-CHAT_MODEL = "@cf/moonshotai/kimi-k2.6"
-# LIGHT tier — the complexity router diverts obviously-trivial turns (greetings, acks,
-# "you up?") here for sub-second, ~20x-cheaper replies. Same ZAI family → same voice.
-# Verified live 2026-06-28 ($0.06/$0.40 per M in/out vs glm-5.2's $1.4/$4.4). Unset = no
-# routing (brain answers everything).
-LIGHT_MODEL = "@cf/zai-org/glm-4.7-flash"
+# Operator brain — gpt-oss-120b (OpenAI open-weight, CF-hosted, NO external key).
+# Founder-chosen 2026-06-28; verified live FAST: 0.5s/call with reasoning_effort:low
+# (MoE + native reasoning levels → honors fast mode, unlike glm-5.2 which was 45-55s).
+# Alt brain (one-line swap, also 0.5s): @cf/nvidia/nemotron-3-120b-a12b.
+CHAT_MODEL = "@cf/openai/gpt-oss-120b"
+# LIGHT tier DISABLED (founder, 2026-06-28: "no light tiers, full tier on everything").
+# Empty ⇒ the complexity router is OFF and the FULL brain (gpt-oss-120b) answers EVERY
+# turn, trivial or not. Set a model id here only if you ever want cheap-tier routing back.
+LIGHT_MODEL = ""
 # All env.AI.run routes through this AI Gateway id (dollar spend cap set in the dashboard).
 AI_GATEWAY_ID = "datebook"
 # Hard daily AI spend ceiling in USD; the operator fail-closes once exceeded
