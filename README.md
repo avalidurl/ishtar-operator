@@ -10,7 +10,7 @@ Plan + rationale: vault `projects/numetal/ishtar/ishtar-agent/cf-migration-plan-
 
 ## What it is
 - **Harness:** **Project Think** (`@cloudflare/think@0.10.0`). `OperatorAgent extends Think` — Think owns the agentic loop, Session memory, streaming, and tools; we provide `getModel()` / `getSystemPrompt()` / `getTools()` + lifecycle hooks. Think extends `Agent`, so `this.schedule` / `this.sql` / `this.runWorkflow` / `this.addMcpServer` are all available.
-- **Brain:** Workers AI (`@cf/zai-org/glm-5.2`, open-weight) through the **`datebook` AI Gateway** — `getModel()` uses `createWorkersAI({ binding: this.env.AI, gateway: { id } })`. Dollar cap + logs in the dashboard. **No OpenAI API.** Daily USD budget hard-stop via `beforeTurn`; spend recorded in `onStepFinish`; fail-closed.
+- **Brain:** Workers AI (`@cf/openai/gpt-oss-120b`, open-weight) through the **`datebook` AI Gateway** — `getModel()` uses `createWorkersAI({ binding: this.env.AI, gateway: { id } })`. Dollar cap + logs in the dashboard. **No OpenAI consumer API.** Daily USD budget hard-stop via `beforeTurn`; spend recorded in `onStepFinish`; fail-closed.
 - **Control surface:** **Slack HTTP Events API** (`POST /slack`) — signature-verified (HMAC-SHA256) + team/founder allowlist, ack-fast + `waitUntil`, routed by `team_id` to the workspace's Think DO, which runs a turn (`saveMessages`) and posts the reply.
 - **Build orchestration — two live engines:**
   - **GA Workflow** (`MissionWorkflow`, `agents/workflows`): plan → `waitForApproval` → work-order. Default-safe.
@@ -46,6 +46,6 @@ Scaffold complete + verified green. **Not deployed** (founder-gated — see DEPL
 **Dynamic Workflows is ON**: `wrangler deploy` needs the **Worker Loader open-beta entitlement** on the account (Workers Paid). dry-run does not. The generated mission module is OUR template (no untrusted model-authored code executed); if you later feed model-authored steps in, sandbox + review them first.
 
 ## Notes
-- `@cf/zai-org/glm-5.2` is an **open-weight** model (Zhipu AI) on Workers AI — not the OpenAI API. No consumer-subscription / ToS issue (the gateway can't carry a subscription anyway). Alternatives: `@cf/nvidia/nemotron-3-120b-a12b`, `@cf/moonshotai/kimi-k2.7-code`.
+- `@cf/openai/gpt-oss-120b` is an **open-weight** model (OpenAI open release) on Workers AI — not the OpenAI consumer API. No consumer-subscription / ToS issue (the gateway can't carry a subscription anyway). Alternatives: `@cf/nvidia/nemotron-3-120b-a12b`, `@cf/moonshotai/kimi-k2.7-code`.
 - The treasury/signing key never lives in this runtime. The operator proposes; the founder executes irreversible actions.
 - A browser chat console is a drop-in later (Think speaks the `useAgentChat` WebSocket protocol via `routeAgentRequest`).
