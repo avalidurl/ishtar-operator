@@ -79,6 +79,26 @@ export async function slackPostMessage(
   }
 }
 
+/**
+ * Open (idempotent) a DM with a user id and post a message. Used for proactive
+ * founder pings (e.g. the daily-budget warning) where we don't have a channel in
+ * hand. Returns ok; never throws.
+ */
+export async function slackDmUser(botToken: string, userId: string, text: string): Promise<boolean> {
+  try {
+    const open = await fetch("https://slack.com/api/conversations.open", {
+      method: "POST",
+      headers: { authorization: `Bearer ${botToken}`, "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ users: userId }),
+    });
+    const ch = ((await open.json().catch(() => ({}))) as { channel?: { id?: string } }).channel?.id;
+    if (!ch) return false;
+    return slackPostMessage(botToken, ch, text);
+  } catch {
+    return false;
+  }
+}
+
 /** Minimal shape of the Slack Events API envelope we consume. */
 export interface SlackEnvelope {
   type?: string;

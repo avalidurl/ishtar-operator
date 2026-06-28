@@ -189,11 +189,38 @@ export class OperatorAgent extends Think<Env> {
     return budget <= 0 || this.usdSpentToday() >= budget;
   }
 
+  /**
+   * Warn the founder ONCE per UTC day when the daily AI budget is hit. Idempotent
+   * via a `budget_warned` settings row holding the already-warned day, so repeated
+   * turns after the cap don't spam. Fail-soft: a failed Slack post never breaks a turn.
+   */
+  private async maybeWarnBudget(): Promise<void> {
+    if (!this.overBudget()) return;
+    const day = utcDay();
+    const warned = this.sql`SELECT value FROM settings WHERE key = 'budget_warned'` as unknown as { value: string }[];
+    if (warned.length && warned[0].value === day) return;
+    // Mark BEFORE sending so a concurrent turn can't double-warn.
+    this.sql`INSERT INTO settings (key, value) VALUES ('budget_warned', ${day}) ON CONFLICT(key) DO UPDATE SET value = ${day}`;
+    const msg =
+      `:warning: *Ishtar (operator) hit its daily AI budget* — $${this.usdSpentToday().toFixed(2)} of $${this.env.DAILY_USD_BUDGET} on ${day} (UTC).\n` +
+      `I've paused inference until the 00:00 UTC reset. Bump DAILY_USD_BUDGET and redeploy to keep going today.`;
+    try {
+      const { slackDmUser, slackPostMessage } = await import("./slack");
+      if (this.env.SLACK_FOUNDER_USER_ID) await slackDmUser(this.env.SLACK_BOT_TOKEN, this.env.SLACK_FOUNDER_USER_ID, msg);
+      else if (this.env.SLACK_BRIEF_CHANNEL) await slackPostMessage(this.env.SLACK_BOT_TOKEN, this.env.SLACK_BRIEF_CHANNEL, msg);
+    } catch {
+      /* warning is best-effort */
+    }
+  }
+
   /* --------------------------- Think hooks ------------------------------- */
 
   /** Hard budget stop before any turn (fail-closed). */
   async beforeTurn(): Promise<void> {
-    if (this.overBudget()) throw new Error(`daily AI budget reached ($${this.env.DAILY_USD_BUDGET})`);
+    if (this.overBudget()) {
+      await this.maybeWarnBudget();
+      throw new Error(`daily AI budget reached ($${this.env.DAILY_USD_BUDGET})`);
+    }
   }
 
   /** Record spend per step from reported usage. */
@@ -203,6 +230,7 @@ export class OperatorAgent extends Think<Env> {
       const tin = ctx.usage?.inputTokens ?? 0;
       const tout = ctx.usage?.outputTokens ?? 0;
       if (tin || tout) this.recordUsd((tin / 1e6) * p.in + (tout / 1e6) * p.out);
+      await this.maybeWarnBudget();
     } catch {
       /* ledger best-effort */
     }
@@ -244,6 +272,7 @@ export class OperatorAgent extends Think<Env> {
         `I've hit my daily AI budget ($${this.env.DAILY_USD_BUDGET}). Bump it or wait for the UTC reset.`,
         p.threadKey || undefined,
       );
+      await this.maybeWarnBudget();
       return;
     }
     // Complexity router: pick light vs brain for THIS turn before the loop starts.
