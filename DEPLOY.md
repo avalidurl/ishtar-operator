@@ -65,6 +65,26 @@ the mesh wiring are part of the private runtime and are kept out of this public 
 
 Docs: `developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/get-started` · `/workers-vpc/examples/connect-to-cloudflare-mesh`.
 
+## 8. ⚠ Archived scaffold — do these BEFORE any re-migration
+This repo is the superseded, never-deployed migration scaffold (see the README banner); the
+live operator runs on a **private runtime provisioned separately**. The dynamic-mission
+**approval gate is now correct** (a typed `waitForEvent` + one `"approval"` event carrying an
+`approved` boolean — see `src/mission-template.ts` / `src/agent.ts`), but three **coupled**
+prerequisites remain UNBUILT. If this CF scaffold is ever revived, land ALL THREE before
+trusting a build mission end-to-end (a correct gate is moot without them):
+
+1. **Founder notification for dynamic missions.** `onWorkflowProgress` / `onWorkflowComplete`
+   never fire on the Worker-Loader path — the generated `WorkflowEntrypoint` has no Agent stub
+   (verified in `agents@0.16.2`). Either wire an explicit `OperatorAgent` callback binding into
+   the generated module, or move missions onto the GA `this.runWorkflow` + `AgentWorkflow` path
+   (restores the hooks, but drops the per-mission runtime-generated code the dynamic path exists for).
+2. **Set `SLACK_BRIEF_CHANNEL`.** It is empty, so the daily brief AND every mission
+   progress/complete post are silently dropped.
+3. **Pin `CHAT_MODEL` to a tool-calling-capable model.** `@cf/openai/gpt-oss-120b` currently
+   returns 400 on ANY tools-array request via the AI Gateway, so the `start_mission` tool call
+   can't fire. Use a tool-capable model (e.g. `@cf/nvidia/nemotron-3-120b-a12b`) or re-test
+   gpt-oss tool-calling before relying on missions.
+
 ## Non-negotiables
 No raw secret in repo/Slack/logs. The operator proposes; deploy/money/reveal/external-post
 are founder-gated behind the Workflow approval. The treasury signing key never enters this runtime.

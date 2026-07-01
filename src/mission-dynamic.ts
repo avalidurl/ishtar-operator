@@ -22,6 +22,9 @@ import {
 } from "@cloudflare/dynamic-workflows";
 import type { Env, WorkerLoaderLike } from "./env";
 import type { MissionParams } from "./agent";
+// The per-mission module generator lives in a runtime-free file so it stays
+// unit-testable in the Node vitest pool (it must not pull in `cloudflare:workers`).
+import { generateMissionModule } from "./mission-template";
 
 // Required: re-exporting puts the class on cloudflare:workers exports — how
 // wrapWorkflowBinding builds the per-mission RPC stubs.
@@ -29,50 +32,6 @@ export { DynamicWorkflowBinding };
 
 interface DynEnv {
   LOADER: WorkerLoaderLike;
-}
-
-/**
- * Generate the per-mission Workflow module (plain JS string). The plan steps are
- * templated from the goal → genuinely runtime-generated workflow code. The Workflow
- * BLOCKS on `step.waitForEvent("approval")` so nothing past planning runs until the
- * founder approves (operator.approveMission → instance.sendEvent).
- */
-function generateMissionModule(params: MissionParams): string {
-  const plan = [
-    "clone + branch the target repo",
-    "implement to production spec (tests first)",
-    "typecheck + tests + wrangler dry-run",
-    "open a PR with risk notes",
-    "await founder review → merge → founder-run deploy",
-  ];
-  const j = (v: unknown) => JSON.stringify(v);
-  return `
-import { WorkflowEntrypoint } from "cloudflare:workers";
-export class MissionRunner extends WorkflowEntrypoint {
-  async run(event, step) {
-    const plan = await step.do("plan", async () => (${j(plan)}));
-    await step.do("await-approval-note", async () => ({ status: "awaiting founder approval", title: ${j(params.title)} }));
-    // Founder gate — blocks until operator.approveMission sends the event (or 7d timeout).
-    const decision = await step.waitForEvent("approval", { timeout: "7 days" });
-    if (decision && decision.payload && decision.payload.reason) {
-      return { rejected: true, reason: decision.payload.reason };
-    }
-    const order = await step.do("emit-work-order", async () => ({
-      title: ${j(params.title)}, goal: ${j(params.goal)}, repo: ${j(params.repo ?? null)},
-      steps: plan, approvedBy: (decision && decision.payload && decision.payload.by) || "founder",
-      emittedAt: Date.now(),
-    }));
-    return order;
-  }
-}
-export default {
-  async fetch(request, env) {
-    const params = await request.json().catch(() => ({}));
-    const instance = await env.WORKFLOWS.create({ params });
-    return Response.json({ id: await instance.id });
-  },
-};
-`.trim();
 }
 
 /** Load (or reuse) the Dynamic Worker for one mission, tagged so the engine can resume it. */
