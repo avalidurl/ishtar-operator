@@ -330,8 +330,12 @@ export class OperatorAgent extends Think<Env> {
 
   async approveMission(instanceId: string, by: string): Promise<void> {
     if (this.env.DYNAMIC_MISSIONS === "true") {
-      // Dynamic missions wait on a Workflow event; approve = send the event to the instance.
-      await this.env.DYNAMIC_WORKFLOWS.get(instanceId).then((i) => i.sendEvent({ type: "approval", payload: { by } }));
+      // Dynamic missions block on step.waitForEvent({ type: "approval" }). A decision is
+      // ONE "approval" event carrying an `approved` boolean — reject is NOT a separate
+      // type (mirrors the agents-SDK approveWorkflow/rejectWorkflow wire). The event
+      // TYPE must match the wait's `type`, or the mission never unblocks.
+      const instance = await this.env.DYNAMIC_WORKFLOWS.get(instanceId);
+      await instance.sendEvent({ type: "approval", payload: { approved: true, by } });
       return;
     }
     await this.approveWorkflow(instanceId, { reason: "founder approved", metadata: { by } });
@@ -339,7 +343,8 @@ export class OperatorAgent extends Think<Env> {
 
   async rejectMission(instanceId: string, reason: string): Promise<void> {
     if (this.env.DYNAMIC_MISSIONS === "true") {
-      await this.env.DYNAMIC_WORKFLOWS.get(instanceId).then((i) => i.sendEvent({ type: "rejection", payload: { reason } }));
+      const instance = await this.env.DYNAMIC_WORKFLOWS.get(instanceId);
+      await instance.sendEvent({ type: "approval", payload: { approved: false, reason } });
       return;
     }
     await this.rejectWorkflow(instanceId, { reason });

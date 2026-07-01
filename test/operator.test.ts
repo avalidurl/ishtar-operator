@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { generateMissionModule } from "../src/mission-template";
 import { scrubSecrets, timingSafeEqual, verifySlackSignature } from "../src/slack";
 
 const enc = new TextEncoder();
@@ -51,5 +52,26 @@ describe("constant-time compare + secret scrub", () => {
     expect(scrubSecrets("here is xoxb-123456789-abcdefghij")).toContain("[redacted]");
     expect(scrubSecrets("key sk-abcdefghijklmnopqrstuvwx")).toContain("[redacted]");
     expect(scrubSecrets("nothing to see")).toBe("nothing to see");
+  });
+});
+
+describe("dynamic mission approval gate (regression — typeless waitForEvent broke approve/reject)", () => {
+  const mod = generateMissionModule({ title: "ship it", goal: "do the thing", requestedBy: "founder" });
+
+  it("waits on a TYPED approval event — CF matches sendEvent by `type`", () => {
+    // The live bug: `waitForEvent("approval", { timeout })` with NO `type`, which
+    // sendEvent({ type: "approval" }) could never satisfy → 7-day hang then error.
+    expect(mod).toContain('{ type: "approval", timeout: "7 days" }');
+    expect(mod).not.toMatch(/waitForEvent\(\s*"approval"\s*,\s*\{\s*timeout:/); // no typeless wait
+  });
+
+  it("gates on the `approved` boolean, not on the presence of a reason", () => {
+    expect(mod).toContain("payload.approved");
+  });
+
+  it("emits the work-order only past the approval gate (fails closed on timeout)", () => {
+    expect(mod).toContain("approval timed out");
+    // emit-work-order must come AFTER the approved check, never before the wait.
+    expect(mod.indexOf("payload.approved")).toBeLessThan(mod.indexOf("emit-work-order"));
   });
 });
