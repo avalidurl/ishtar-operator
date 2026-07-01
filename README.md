@@ -1,16 +1,22 @@
 # ishtar-operator
 
+> **⚠️ ARCHIVED / SUPERSEDED MIGRATION ARTIFACT.** This repo is a scaffold from the
+> 2026-06 Cloudflare re-platforming of the operator brain. It was **never deployed** and
+> is **not the current source of truth**. It is kept for reference only. Runtime config,
+> the deploy topology, and the model choice are provisioned privately and are not
+> described here. Do not treat anything in this repo as live infrastructure.
+
 **Ishtar-the-Agent** — the founder-facing operator brain for the Numetal / Ishtar
 project, as a **Project Think agent** on the Cloudflare Agents SDK (an `Agent` *is* a
-Durable Object). It re-platforms the old OpenClaw-on-Hetzner brain onto Cloudflare. It
+Durable Object). It re-platforms the previous self-hosted operator brain onto Cloudflare. It
 **operates** the live Ishtar dating venue and the build process; it does **not** run
 matching (the venue Worker's `MatchCoordinator` DO owns that).
 
-Plan + rationale: vault `projects/numetal/ishtar/ishtar-agent/cf-migration-plan-2026-06-28.md`.
+Plan + rationale live in the project's private planning notes.
 
 ## What it is
 - **Harness:** **Project Think** (`@cloudflare/think@0.10.0`). `OperatorAgent extends Think` — Think owns the agentic loop, Session memory, streaming, and tools; we provide `getModel()` / `getSystemPrompt()` / `getTools()` + lifecycle hooks. Think extends `Agent`, so `this.schedule` / `this.sql` / `this.runWorkflow` / `this.addMcpServer` are all available.
-- **Brain:** Workers AI (`@cf/zai-org/glm-5.2`, open-weight) through the **`datebook` AI Gateway** — `getModel()` uses `createWorkersAI({ binding: this.env.AI, gateway: { id } })`. Dollar cap + logs in the dashboard. **No OpenAI API.** Daily USD budget hard-stop via `beforeTurn`; spend recorded in `onStepFinish`; fail-closed.
+- **Brain:** Workers AI (`@cf/openai/gpt-oss-120b`, open-weight, CF-hosted) through the AI Gateway — `getModel()` uses `createWorkersAI({ binding: this.env.AI, gateway: { id } })`. Dollar cap + logs in the dashboard. **No external OpenAI API key.** Daily USD budget hard-stop via `beforeTurn`; spend recorded in `onStepFinish`; fail-closed.
 - **Control surface:** **Slack HTTP Events API** (`POST /slack`) — signature-verified (HMAC-SHA256) + team/founder allowlist, ack-fast + `waitUntil`, routed by `team_id` to the workspace's Think DO, which runs a turn (`saveMessages`) and posts the reply.
 - **Build orchestration — two live engines:**
   - **GA Workflow** (`MissionWorkflow`, `agents/workflows`): plan → `waitForApproval` → work-order. Default-safe.
@@ -46,6 +52,6 @@ Scaffold complete + verified green. **Not deployed** (founder-gated — see DEPL
 **Dynamic Workflows is ON**: `wrangler deploy` needs the **Worker Loader open-beta entitlement** on the account (Workers Paid). dry-run does not. The generated mission module is OUR template (no untrusted model-authored code executed); if you later feed model-authored steps in, sandbox + review them first.
 
 ## Notes
-- `@cf/zai-org/glm-5.2` is an **open-weight** model (Zhipu AI) on Workers AI — not the OpenAI API. No consumer-subscription / ToS issue (the gateway can't carry a subscription anyway). Alternatives: `@cf/nvidia/nemotron-3-120b-a12b`, `@cf/moonshotai/kimi-k2.7-code`.
+- `@cf/openai/gpt-oss-120b` is an **open-weight**, CF-hosted model on Workers AI — not the external OpenAI API (no external key, no consumer-subscription / ToS issue; the gateway can't carry a subscription anyway). Alternatives (one-line swap): `@cf/nvidia/nemotron-3-120b-a12b`, `@cf/moonshotai/kimi-k2.7-code`.
 - The treasury/signing key never lives in this runtime. The operator proposes; the founder executes irreversible actions.
 - A browser chat console is a drop-in later (Think speaks the `useAgentChat` WebSocket protocol via `routeAgentRequest`).
