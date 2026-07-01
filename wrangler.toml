@@ -57,10 +57,11 @@ AI_GATEWAY_ID = "datebook"
 # Hard daily AI spend ceiling in USD; the operator fail-closes once exceeded
 # (runaway-loop money backstop, NOT a usage target). Founder-set 2026-06-28.
 DAILY_USD_BUDGET = "20"
-# Lock Slack to the founder's workspace + user (allowlist: only Gökhan can talk to the
-# operator) AND give the daily-budget warning a DM target. Set 2026-06-28.
-SLACK_TEAM_ID = "REDACTED-SLACK-ID"
-SLACK_FOUNDER_USER_ID = "REDACTED-SLACK-ID"
+# Lock Slack to the founder's workspace + user (allowlist: only the founder can talk to
+# the operator) AND give the daily-budget warning a DM target. Fill in the real values
+# privately at deploy time — do NOT commit the workspace/user IDs to a public repo.
+SLACK_TEAM_ID = "<SLACK_WORKSPACE_ID>"
+SLACK_FOUNDER_USER_ID = "slack:<OWNER_USER_ID>"
 # Channel the daily brief posts to ("C…"); empty = brief is skipped.
 SLACK_BRIEF_CHANNEL = ""
 # Dynamic Workflows ON — the operator routes build missions through the runtime-generated
