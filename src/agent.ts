@@ -14,17 +14,29 @@
  *
  * INVARIANTS: every model call routes through the `datebook` AI Gateway (getModel
  * gateway config) · daily USD budget hard-stop, fail-closed · the operator PROPOSES,
- * deploy/money/reveal/external-post are founder-gated behind a Workflow approval ·
- * no treasury key in this runtime · secrets never echoed (index.ts scrubs Slack out).
+ * deploy/money/reveal/external-post are founder-gated behind a Workflow approval, and
+ * that boundary is ENFORCED in code by beforeToolCall + workspaceBash=false (not just
+ * the prompt) · no treasury key in this runtime · secrets never echoed (scrubSecrets).
  */
 import { Think } from "@cloudflare/think";
+import type { ToolCallContext, ToolCallDecision } from "@cloudflare/think";
 import { tool } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { z } from "zod";
 import type { Env } from "./env";
+import { classifyTurn, computeOverBudget, isToolAllowed, TOOL_ALLOWLIST } from "./logic";
 import { triggerDynamicMission } from "./mission-dynamic";
 
 const utcDay = (): string => new Date().toISOString().slice(0, 10);
+
+/** Emit a single-line structured JSON log. Never throws (logging must not break a turn). */
+function logError(event: string, fields: Record<string, unknown> = {}): void {
+  try {
+    console.error(JSON.stringify({ level: "error", event, ...fields }));
+  } catch {
+    /* logging is best-effort */
+  }
+}
 
 // Per-M-token USD prices, read from the live Workers-AI catalog (models/search
 // → properties.price) — not guessed. Keep both router tiers here so onStepFinish
@@ -40,26 +52,6 @@ const PRICING: Record<string, { in: number; out: number }> = {
 };
 const DEFAULT_PRICE = { in: 0.3, out: 2.5 };
 
-// ---- Complexity router (light tier) --------------------------------------
-// AI Gateway Dynamic Routing is rule-based (plan/rate-limit/budget/AB) and CANNOT
-// read the prompt; the only prompt-aware "auto" router is OpenRouter Auto, which is
-// non-deterministic and unsafe mid-tool-loop. So the router lives HERE, in-agent:
-// a conservative, brain-by-default gate that diverts only OBVIOUSLY trivial turns to
-// the cheap LIGHT model. Bias is correctness — when in doubt, the brain answers.
-const LIGHT_INTENTS = new Set([
-  "hi", "hii", "hey", "heya", "hello", "hellow", "yo", "sup", "wassup", "gm", "gn",
-  "good morning", "good evening", "good night", "morning", "evening",
-  "you there", "u there", "are you there", "you up", "u up", "are you up",
-  "you online", "are you online", "you alive", "are you alive", "you awake",
-  "are you awake", "you working", "are you working", "ping", "test", "testing",
-  "thanks", "thank you", "thx", "ty", "tysm", "cheers", "ok", "okay", "k", "kk",
-  "got it", "gotcha", "cool", "nice", "great", "perfect", "awesome", "lol",
-  "yes", "yep", "yeah", "ya", "no", "nope", "nah", "yup", "👍", "🙏", "👌",
-]);
-// Any of these in a turn forces the BRAIN regardless of length — they imply tools,
-// state reads, reasoning, or founder commands.
-const BRAIN_KEYWORDS = /\b(status|brief|plan|mission|build|deploy|approve|reject|hold|fix|write|create|review|scan|repo|why|how|what|when|who|which|analy|summ|draft|propose|check|run|update|migrat|cost|budget|spend)\b/i;
-
 /** One mission spec the orchestrator hands to a Workflow. */
 export interface MissionParams {
   title: string;
@@ -69,6 +61,26 @@ export interface MissionParams {
 }
 
 export class OperatorAgent extends Think<Env> {
+  /**
+   * SECURITY — enforce "propose, don't act" in CODE, not just the prompt. Think enables
+   * a workspace shell tool by default and merges the full workspace toolset
+   * (read/write/edit/delete/bash) plus every wired MCP tool into the toolset handed to
+   * the model. Without this, the system-prompt boundary is jailbreakable (a prompt
+   * injection via untrusted MCP output or a crafted message could mutate DO state / call
+   * MCP write tools). We disable the shell entirely and block any tool not on the
+   * allowlist (see ./logic TOOL_ALLOWLIST — currently just `start_mission`).
+   */
+  override workspaceBash = false;
+
+  override beforeToolCall(ctx: ToolCallContext): ToolCallDecision | void {
+    if (!isToolAllowed(ctx.toolName)) {
+      return {
+        action: "block",
+        reason: `Tool "${ctx.toolName}" is not permitted — the operator proposes, it does not act. Allowed: ${[...TOOL_ALLOWLIST].join(", ")}. Queue a build mission with start_mission instead.`,
+      };
+    }
+  }
+
   /** Model id the router picked for the CURRENT turn. getModel reads it; routeTurn
    *  sets it at turn start, then it sticks for the whole turn (never swap mid-loop —
    *  that breaks tool-call formatting). Defaults to the brain when unset. */
@@ -79,23 +91,9 @@ export class OperatorAgent extends Think<Env> {
     return this.routedModel ?? this.env.CHAT_MODEL;
   }
 
-  /**
-   * Complexity router: pick the LIGHT model for a turn ONLY when the message is
-   * obviously trivial (a known greeting/ack/presence-check, ≤6 words, no brain
-   * keyword). Everything else — every question, command, or longer turn — gets the
-   * brain. Conservative on purpose: a misroute-to-light costs quality, a
-   * misroute-to-brain only costs a few cents. Routes ONCE per turn.
-   */
+  /** Route this turn to the light tier vs the brain (see ./logic classifyTurn). Once per turn. */
   private routeTurn(text: string): void {
-    const light = this.env.LIGHT_MODEL;
-    if (!light) {
-      this.routedModel = undefined;
-      return;
-    }
-    const norm = text.trim().toLowerCase().replace(/[.!?,]+$/g, "").replace(/\s+/g, " ");
-    const trivial = LIGHT_INTENTS.has(norm) || (norm.split(" ").length <= 6 && LIGHT_INTENTS.has(norm.replace(/[^a-z ]/g, "").trim()));
-    const wantsBrain = BRAIN_KEYWORDS.test(text);
-    this.routedModel = trivial && !wantsBrain ? light : undefined;
+    this.routedModel = classifyTurn(text, this.env.LIGHT_MODEL);
   }
 
   /** The model — Workers AI routed through the `datebook` AI Gateway (cap + logs).
@@ -120,7 +118,10 @@ export class OperatorAgent extends Think<Env> {
     return OPERATOR_SYSTEM;
   }
 
-  /** Tools the operator may call. `start_mission` queues an approval-gated build mission. */
+  /** Tools the operator may call. `start_mission` queues an approval-gated build mission.
+   *  NOTE: this is the ONLY tool the model may actually invoke — beforeToolCall blocks
+   *  everything else (incl. Think's auto-merged workspace tools). Extend TOOL_ALLOWLIST
+   *  in ./logic if you intend to expose read-only MCP tools. */
   getTools() {
     return {
       start_mission: tool({
@@ -145,7 +146,7 @@ export class OperatorAgent extends Think<Env> {
     this.sql`CREATE TABLE IF NOT EXISTS budget (day TEXT PRIMARY KEY, usd REAL NOT NULL DEFAULT 0)`;
     this.sql`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)`;
     this.sql`CREATE TABLE IF NOT EXISTS seen_events (event_id TEXT PRIMARY KEY, at TEXT DEFAULT (datetime('now')))`;
-    const marked = this.sql`SELECT value FROM settings WHERE key = 'brief_scheduled'` as unknown as { value: string }[];
+    const marked = this.sql<{ value: string }>`SELECT value FROM settings WHERE key = 'brief_scheduled'`;
     if (!marked.length) {
       await this.schedule("0 8 * * *", "dailyBrief", {});
       this.sql`INSERT INTO settings (key, value) VALUES ('brief_scheduled','1') ON CONFLICT(key) DO NOTHING`;
@@ -166,8 +167,9 @@ export class OperatorAgent extends Think<Env> {
         await this.addMcpServer(name, url, {
           transport: this.env.MCP_TOKEN ? { headers: { Authorization: `Bearer ${this.env.MCP_TOKEN}` } } : undefined,
         });
-      } catch {
-        /* a down MCP server must not break startup */
+      } catch (e) {
+        // a down MCP server must not break startup
+        logError("wireMcp.failed", { server: name, err: String((e as Error)?.message ?? e) });
       }
     }
   }
@@ -175,42 +177,46 @@ export class OperatorAgent extends Think<Env> {
   /* --------------------------- budget governor --------------------------- */
 
   private usdSpentToday(): number {
-    const row = this.sql`SELECT usd FROM budget WHERE day = ${utcDay()}` as unknown as { usd: number }[];
-    return row.length ? Number(row[0].usd) : 0;
+    const row = this.sql<{ usd: number }>`SELECT usd FROM budget WHERE day = ${utcDay()}`;
+    const first = row[0];
+    return first ? Number(first.usd) : 0;
   }
 
   private recordUsd(usd: number): void {
     this.sql`INSERT INTO budget (day, usd) VALUES (${utcDay()}, ${usd}) ON CONFLICT(day) DO UPDATE SET usd = usd + ${usd}`;
   }
 
+  /** Fail-closed daily-budget predicate (blank/NaN/≤0 cap ⇒ over budget). */
   private overBudget(): boolean {
-    const cap = Number(this.env.DAILY_USD_BUDGET);
-    const budget = Number.isFinite(cap) && cap > 0 ? cap : 0;
-    return budget <= 0 || this.usdSpentToday() >= budget;
+    return computeOverBudget(Number(this.env.DAILY_USD_BUDGET), this.usdSpentToday());
   }
 
   /**
-   * Warn the founder ONCE per UTC day when the daily AI budget is hit. Idempotent
-   * via a `budget_warned` settings row holding the already-warned day, so repeated
-   * turns after the cap don't spam. Fail-soft: a failed Slack post never breaks a turn.
+   * Warn the founder ONCE per UTC day when the daily AI budget is hit. We mark the day
+   * 'warned' BEFORE sending (so a concurrent turn can't double-warn), then roll the mark
+   * back if the send fails — so a failed Slack post retries next turn instead of
+   * suppressing the warning for the whole day. Fail-soft: never breaks a turn.
    */
   private async maybeWarnBudget(): Promise<void> {
     if (!this.overBudget()) return;
     const day = utcDay();
-    const warned = this.sql`SELECT value FROM settings WHERE key = 'budget_warned'` as unknown as { value: string }[];
-    if (warned.length && warned[0].value === day) return;
-    // Mark BEFORE sending so a concurrent turn can't double-warn.
+    const warned = this.sql<{ value: string }>`SELECT value FROM settings WHERE key = 'budget_warned'`;
+    if (warned[0]?.value === day) return;
+    // Optimistically claim the warn slot for today (prevents a concurrent double-warn).
     this.sql`INSERT INTO settings (key, value) VALUES ('budget_warned', ${day}) ON CONFLICT(key) DO UPDATE SET value = ${day}`;
     const msg =
       `:warning: *Ishtar (operator) hit its daily AI budget* — $${this.usdSpentToday().toFixed(2)} of $${this.env.DAILY_USD_BUDGET} on ${day} (UTC).\n` +
       `I've paused inference until the 00:00 UTC reset. Bump DAILY_USD_BUDGET and redeploy to keep going today.`;
+    let sent = false;
     try {
       const { slackDmUser, slackPostMessage } = await import("./slack");
-      if (this.env.SLACK_FOUNDER_USER_ID) await slackDmUser(this.env.SLACK_BOT_TOKEN, this.env.SLACK_FOUNDER_USER_ID, msg);
-      else if (this.env.SLACK_BRIEF_CHANNEL) await slackPostMessage(this.env.SLACK_BOT_TOKEN, this.env.SLACK_BRIEF_CHANNEL, msg);
+      if (this.env.SLACK_FOUNDER_USER_ID) sent = await slackDmUser(this.env.SLACK_BOT_TOKEN, this.env.SLACK_FOUNDER_USER_ID, msg);
+      else if (this.env.SLACK_BRIEF_CHANNEL) sent = await slackPostMessage(this.env.SLACK_BOT_TOKEN, this.env.SLACK_BRIEF_CHANNEL, msg);
     } catch {
       /* warning is best-effort */
     }
+    // Roll back the mark if nothing was actually delivered, so we retry next turn.
+    if (!sent) this.sql`DELETE FROM settings WHERE key = 'budget_warned' AND value = ${day}`;
   }
 
   /* --------------------------- Think hooks ------------------------------- */
@@ -245,20 +251,30 @@ export class OperatorAgent extends Think<Env> {
   /* --------------------------- Slack turn -------------------------------- */
 
   /**
-   * One Slack event → de-dup → Think turn → scrub → post. Single RPC from /slack
-   * (run in waitUntil after a fast 200). Returns the reply, or null if dup/over-budget.
+   * One Slack event → de-dup → schedule the turn. Single RPC from /slack (run in
+   * waitUntil after a fast 200). Returns "queued", or null if it's a duplicate delivery.
    */
   async handleSlackEvent(p: { eventId?: string; text: string; threadKey: string; channel: string }): Promise<string | null> {
     if (p.eventId) {
-      const existing = this.sql`SELECT 1 AS x FROM seen_events WHERE event_id = ${p.eventId}` as unknown as { x: number }[];
+      const existing = this.sql<{ x: number }>`SELECT 1 AS x FROM seen_events WHERE event_id = ${p.eventId}`;
       if (existing.length) return null;
       this.sql`INSERT OR IGNORE INTO seen_events (event_id) VALUES (${p.eventId})`;
+      // Opportunistic prune — Slack's retry window is minutes; a week is ample. Keeps
+      // the dedup table bounded without a separate sweep.
+      this.sql`DELETE FROM seen_events WHERE at < datetime('now','-7 days')`;
     }
-    // Hand the model turn to the DO's OWN scheduler (immediate alarm). The Worker
-    // acks Slack in <3s and its waitUntil finishes fast; the turn then runs on the
-    // Durable Object's lifetime — NOT the Worker request's waitUntil, which CF
-    // cancels at ~30s and was killing the turn before it could post a reply.
-    await this.schedule(0, "runSlackTurn", { text: p.text, threadKey: p.threadKey, channel: p.channel });
+    // Hand the model turn to the DO's OWN scheduler (immediate alarm). The Worker acks
+    // Slack in <3s and its waitUntil finishes fast; the turn then runs on the Durable
+    // Object's lifetime — NOT the Worker request's waitUntil, which CF cancels at ~30s.
+    try {
+      await this.schedule(0, "runSlackTurn", { text: p.text, threadKey: p.threadKey, channel: p.channel });
+    } catch (e) {
+      // Scheduling failed AFTER we marked the event seen → roll back the dedup row so a
+      // Slack redelivery can retry, instead of silently dropping the turn.
+      if (p.eventId) this.sql`DELETE FROM seen_events WHERE event_id = ${p.eventId}`;
+      logError("handleSlackEvent.scheduleFailed", { err: String((e as Error)?.message ?? e) });
+      throw e;
+    }
     return "queued";
   }
 
@@ -290,11 +306,11 @@ export class OperatorAgent extends Think<Env> {
         const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
         reply = uiText(lastAssistant) || "(no reply)";
       } else {
-        console.error("slack turn not completed:", result.status, (result as { error?: string }).error);
+        logError("runSlackTurn.notCompleted", { status: result.status, err: (result as { error?: string }).error });
         reply = "I hit a snag finishing that — try me again.";
       }
     } catch (e) {
-      console.error("slack turn threw:", e);
+      logError("runSlackTurn.threw", { err: String((e as Error)?.message ?? e) });
       reply = "Something went wrong on my side — try again.";
     }
     reply = scrubSecrets(reply) || "(no reply)";
@@ -350,18 +366,23 @@ export class OperatorAgent extends Think<Env> {
     await this.rejectWorkflow(instanceId, { reason });
   }
 
+  // NOTE: onWorkflowProgress/onWorkflowComplete fire ONLY for the GA runWorkflow() path.
+  // On the Worker-Loader dynamic path (DYNAMIC_MISSIONS="true") there is no Agent stub to
+  // bridge progress back, so these do NOT fire for dynamic missions — a queued dynamic
+  // mission surfaces no progress/complete ping here (unbuilt prerequisite, see DEPLOY.md).
   async onWorkflowProgress(_workflowName: string, instanceId: string, progress: unknown): Promise<void> {
     const channel = this.env.SLACK_BRIEF_CHANNEL;
     if (!channel) return;
-    const { slackPostMessage } = await import("./slack");
-    await slackPostMessage(this.env.SLACK_BOT_TOKEN, channel, `mission ${instanceId}: ${JSON.stringify(progress).slice(0, 500)}`);
+    const { scrubSecrets, slackPostMessage } = await import("./slack");
+    const body = scrubSecrets(`mission ${instanceId}: ${JSON.stringify(progress).slice(0, 500)}`);
+    await slackPostMessage(this.env.SLACK_BOT_TOKEN, channel, body);
   }
 
   async onWorkflowComplete(_workflowName: string, instanceId: string): Promise<void> {
     const channel = this.env.SLACK_BRIEF_CHANNEL;
     if (!channel) return;
-    const { slackPostMessage } = await import("./slack");
-    await slackPostMessage(this.env.SLACK_BOT_TOKEN, channel, `mission ${instanceId} complete ✅`);
+    const { scrubSecrets, slackPostMessage } = await import("./slack");
+    await slackPostMessage(this.env.SLACK_BOT_TOKEN, channel, scrubSecrets(`mission ${instanceId} complete ✅`));
   }
 }
 

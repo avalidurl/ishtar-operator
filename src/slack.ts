@@ -48,13 +48,29 @@ export async function verifySlackSignature(
   return timingSafeEqual(`v0=${hex}`, signature);
 }
 
-/** Belt-and-braces: never let a key/token/seed shape leave in an outbound reply. */
+/**
+ * Belt-and-braces: never let a known token/key shape leave in an outbound reply. This is
+ * defense-in-depth on the model's reply — the founder secrets (ACCESS_KEY / SLACK_SIGNING_SECRET
+ * / MCP_TOKEN / SLACK_BOT_TOKEN) are never placed in the model's context, but MCP tool
+ * results the model can echo may carry tokens, so breadth matters.
+ *
+ * Deliberately does NOT redact bare 64-hex strings: that pattern matches sha256 content
+ * hashes / tx hashes the operator legitimately reports, and no scaffold secret is bare
+ * 64-hex. A `Bearer <token>` is redacted instead, which covers those secrets when echoed
+ * inside an Authorization header.
+ */
 export function scrubSecrets(s: string): string {
   return String(s)
-    .replace(/xox[abprs]-[A-Za-z0-9-]{8,}/g, "[redacted]")
-    .replace(/\bsk-[A-Za-z0-9]{16,}\b/g, "[redacted]")
+    // Slack token family (bot/user/app-config/refresh) + app-level token.
+    .replace(/\bxox[abopres]-[A-Za-z0-9-]{8,}/gi, "[redacted]")
+    .replace(/\bxapp-[A-Za-z0-9-]{8,}/gi, "[redacted]")
+    // OpenAI-style, Tailscale, GitHub, AWS access-key shapes.
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]")
     .replace(/\btskey-[A-Za-z0-9-]{8,}\b/g, "[redacted]")
-    .replace(/\b[A-Fa-f0-9]{64}\b/g, "[redacted]");
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{16,}\b/g, "[redacted]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]")
+    // Any explicit bearer token (covers arbitrary founder-set secrets when echoed in a header).
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer [redacted]");
 }
 
 /** Post a message to Slack via the Web API. Returns ok. Never throws. */
@@ -72,6 +88,8 @@ export async function slackPostMessage(
         "content-type": "application/json; charset=utf-8",
       },
       body: JSON.stringify({ channel, text, ...(threadTs ? { thread_ts: threadTs } : {}) }),
+      // Bound the call so a hung Slack upstream can't stall the DO alarm indefinitely.
+      signal: AbortSignal.timeout(5000),
     });
     return ((await r.json().catch(() => ({}))) as { ok?: boolean }).ok === true;
   } catch {
@@ -90,6 +108,7 @@ export async function slackDmUser(botToken: string, userId: string, text: string
       method: "POST",
       headers: { authorization: `Bearer ${botToken}`, "content-type": "application/json; charset=utf-8" },
       body: JSON.stringify({ users: userId }),
+      signal: AbortSignal.timeout(5000),
     });
     const ch = ((await open.json().catch(() => ({}))) as { channel?: { id?: string } }).channel?.id;
     if (!ch) return false;

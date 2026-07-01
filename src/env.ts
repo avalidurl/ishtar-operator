@@ -51,9 +51,11 @@ export interface Env {
   /** SECRET — Slack bot OAuth token (xoxb-…) for chat.postMessage. Never log. */
   SLACK_BOT_TOKEN: string;
 
-  /** Optional — lock Slack to one workspace (team_id "T…"). Empty = any. */
+  /** Slack founder-lock (workspace). Admission FAILS CLOSED — a blank/unset value admits
+   *  NOBODY (index.ts). Set to the bare team id ("T…"). */
   SLACK_TEAM_ID?: string;
-  /** Optional — lock Slack to the founder's member id ("U…"). Empty = any in team. */
+  /** Slack founder-lock (user). Admission FAILS CLOSED — blank/unset admits NOBODY. Set to
+   *  the founder's bare member id ("U…") — NO "slack:" prefix (compared to raw event.user). */
   SLACK_FOUNDER_USER_ID?: string;
   /** Optional — the channel the daily brief is posted to ("C…"). */
   SLACK_BRIEF_CHANNEL?: string;

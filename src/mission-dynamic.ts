@@ -48,7 +48,11 @@ function loadMission(env: DynEnv, missionId: string, params: MissionParams) {
     globalOutbound: null,
     // The generated worker uses this exactly like a real Workflow binding; every
     // create() is tagged with { missionId } so the engine routes resumes back here.
-    env: { WORKFLOWS: wrapWorkflowBinding({ missionId }) },
+    // `bindingName` MUST name the dispatcher-side Workflow binding to resolve on the
+    // main Worker env — it defaults to "WORKFLOWS", which does NOT exist here (only
+    // MISSION_WORKFLOW / DYNAMIC_WORKFLOWS do), so omitting it made resolveBinding throw
+    // and every dynamic mission failed before an instance was ever created.
+    env: { WORKFLOWS: wrapWorkflowBinding({ missionId }, { bindingName: "DYNAMIC_WORKFLOWS" }) },
   }));
 }
 

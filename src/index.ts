@@ -21,6 +21,7 @@ import { getAgentByName } from "agents";
 import { Hono } from "hono";
 import { OperatorAgent } from "./agent";
 import type { Env } from "./env";
+import { parseBearer } from "./logic";
 import { type SlackEnvelope, timingSafeEqual, verifySlackSignature } from "./slack";
 
 export { OperatorAgent } from "./agent";
@@ -48,9 +49,7 @@ app.use("*", async (c, next) => {
 function isFounder(c: { req: { header: (k: string) => string | undefined }; env: Env }): boolean {
   const key = c.env.ACCESS_KEY;
   if (typeof key !== "string" || key.length === 0) return false;
-  const auth = c.req.header("authorization");
-  if (!auth) return false;
-  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const bearer = parseBearer(c.req.header("authorization"));
   return bearer.length > 0 && timingSafeEqual(bearer, key);
 }
 
@@ -89,9 +88,11 @@ app.post("/slack", async (c) => {
     const isMention = ev.type === "app_mention";
     const isDM = ev.type === "message" && ev.channel_type === "im";
     const ignorable = ev.bot_id || ev.subtype;
-    // Founder/team allowlist (fail-closed when configured).
-    const teamOk = !c.env.SLACK_TEAM_ID || body.team_id === c.env.SLACK_TEAM_ID;
-    const userOk = !c.env.SLACK_FOUNDER_USER_ID || ev.user === c.env.SLACK_FOUNDER_USER_ID;
+    // Founder/team allowlist — FAIL CLOSED. Both must be configured AND match; a blank
+    // (or unfilled placeholder) value admits NOBODY, so a misconfigured deploy can't
+    // expose the operator to any workspace/user that installed the app.
+    const teamOk = !!c.env.SLACK_TEAM_ID && body.team_id === c.env.SLACK_TEAM_ID;
+    const userOk = !!c.env.SLACK_FOUNDER_USER_ID && ev.user === c.env.SLACK_FOUNDER_USER_ID;
 
     if ((isMention || isDM) && !ignorable && teamOk && userOk && ev.channel) {
       const text = String(ev.text ?? "").replace(/<@[A-Z0-9]+>/g, "").trim();
@@ -106,8 +107,9 @@ app.post("/slack", async (c) => {
             try {
               const agent = await getAgentByName(c.env.OperatorAgent, team);
               await agent.handleSlackEvent({ eventId, text, threadKey, channel });
-            } catch {
-              /* lands in Workers Logs; never fails the ack */
+            } catch (e) {
+              // lands in Workers Logs; never fails the ack
+              console.error(JSON.stringify({ level: "error", event: "slack.dispatch.failed", err: String((e as Error)?.message ?? e) }));
             }
           })(),
         );

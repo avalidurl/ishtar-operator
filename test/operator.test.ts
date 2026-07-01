@@ -53,6 +53,22 @@ describe("constant-time compare + secret scrub", () => {
     expect(scrubSecrets("key sk-abcdefghijklmnopqrstuvwx")).toContain("[redacted]");
     expect(scrubSecrets("nothing to see")).toBe("nothing to see");
   });
+
+  it("scrubSecrets covers the Slack token family, app + bearer tokens", () => {
+    expect(scrubSecrets("xoxe-1-abcdefgh12345678")).toContain("[redacted]");
+    expect(scrubSecrets("xapp-1-A012-xyzxyzxyz")).toContain("[redacted]");
+    expect(scrubSecrets("ghp_abcdefghijklmnopqrstuvwxyz0123")).toContain("[redacted]");
+    const bearer = scrubSecrets("Authorization: Bearer sometok3n-value-here");
+    expect(bearer).toContain("Bearer [redacted]");
+    expect(bearer).not.toContain("sometok3n");
+  });
+
+  it("scrubSecrets does NOT over-redact benign hex (sha256 / git SHA)", () => {
+    const sha256 = "a".repeat(64);
+    const gitSha = "0123456789abcdef0123456789abcdef01234567"; // 40 hex
+    expect(scrubSecrets(`digest ${sha256}`)).toContain(sha256);
+    expect(scrubSecrets(`commit ${gitSha}`)).toContain(gitSha);
+  });
 });
 
 describe("dynamic mission approval gate (regression — typeless waitForEvent broke approve/reject)", () => {
