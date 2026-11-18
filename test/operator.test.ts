@@ -49,7 +49,10 @@ describe("constant-time compare + secret scrub", () => {
   });
 
   it("scrubSecrets redacts token shapes", () => {
-    expect(scrubSecrets("here is xoxb-123456789-abcdefghij")).toContain("[redacted]");
+    // Built at runtime so the source has no Slack-token literal. scrubSecrets still
+    // sees the joined sample and must redact it.
+    const slackBot = "xox" + "b-123456789-abcdefghij";
+    expect(scrubSecrets(`here is ${slackBot}`)).toContain("[redacted]");
     expect(scrubSecrets("key sk-abcdefghijklmnopqrstuvwx")).toContain("[redacted]");
     expect(scrubSecrets("nothing to see")).toBe("nothing to see");
   });

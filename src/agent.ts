@@ -92,7 +92,7 @@ export class OperatorAgent extends Think<Env> {
       this.routedModel = undefined;
       return;
     }
-    const norm = text.trim().toLowerCase().replace(/[.!?,]+$/g, "").replace(/\s+/g, " ");
+    const norm = text.trim().toLowerCase().replace(/[.!?,]+$/, "").replace(/\s+/g, " ");
     const trivial = LIGHT_INTENTS.has(norm) || (norm.split(" ").length <= 6 && LIGHT_INTENTS.has(norm.replace(/[^a-z ]/g, "").trim()));
     const wantsBrain = BRAIN_KEYWORDS.test(text);
     this.routedModel = trivial && !wantsBrain ? light : undefined;
