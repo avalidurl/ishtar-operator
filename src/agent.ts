@@ -40,6 +40,33 @@ const PRICING: Record<string, { in: number; out: number }> = {
 };
 const DEFAULT_PRICE = { in: 0.3, out: 2.5 };
 
+/** Lowercase, strip trailing .!?, and collapse whitespace.
+ *  A quantified regex here is js/polynomial-redos on untrusted Slack text. */
+function normalizeTrivial(text: string): string {
+  let s = text.trim().toLowerCase();
+  let end = s.length;
+  while (end > 0) {
+    const c = s.charAt(end - 1);
+    if (c !== "." && c !== "!" && c !== "?" && c !== ",") break;
+    end -= 1;
+  }
+  if (end !== s.length) s = s.slice(0, end);
+  let out = "";
+  let pending = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charAt(i);
+    const space = c === " " || c === "\n" || c === "\r" || c === "\t" || c === "\f" || c === "\v";
+    if (space) {
+      pending = out.length > 0;
+      continue;
+    }
+    if (pending) out += " ";
+    pending = false;
+    out += c;
+  }
+  return out;
+}
+
 // ---- Complexity router (light tier) --------------------------------------
 // AI Gateway Dynamic Routing is rule-based (plan/rate-limit/budget/AB) and CANNOT
 // read the prompt; the only prompt-aware "auto" router is OpenRouter Auto, which is
@@ -92,7 +119,7 @@ export class OperatorAgent extends Think<Env> {
       this.routedModel = undefined;
       return;
     }
-    const norm = text.trim().toLowerCase().replace(/[.!?,]+$/, "").replace(/\s+/g, " ");
+    const norm = normalizeTrivial(text);
     const trivial = LIGHT_INTENTS.has(norm) || (norm.split(" ").length <= 6 && LIGHT_INTENTS.has(norm.replace(/[^a-z ]/g, "").trim()));
     const wantsBrain = BRAIN_KEYWORDS.test(text);
     this.routedModel = trivial && !wantsBrain ? light : undefined;
